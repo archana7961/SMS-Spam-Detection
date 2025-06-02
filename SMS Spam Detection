@@ -1,0 +1,126 @@
+
+# Here's the complete Python code for the "SMS Spam Detection using TensorFlow" project,
+# combining data preprocessing, modeling with MultinomialNB, custom embedding, BiLSTM, and USE.
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import tensorflow_hub as hub
+
+# Load data
+df = pd.read_csv("/content/spam.csv", encoding='latin-1')
+df = df.drop(['Unnamed: 2', 'Unnamed: 3', 'Unnamed: 4'], axis=1)
+df = df.rename(columns={'v1': 'label', 'v2': 'Text'})
+df['label_enc'] = df['label'].map({'ham': 0, 'spam': 1})
+
+# Data summary
+avg_words_len = round(sum([len(i.split()) for i in df['Text']]) / len(df['Text']))
+s = set()
+for sent in df['Text']:
+    for word in sent.split():
+        s.add(word)
+total_words_length = len(s)
+
+# Train-test split
+X, y = np.array(df['Text']), np.array(df['label_enc'])
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Baseline: MultinomialNB
+tfidf_vec = TfidfVectorizer().fit(X_train)
+X_train_vec, X_test_vec = tfidf_vec.transform(X_train), tfidf_vec.transform(X_test)
+baseline_model = MultinomialNB()
+baseline_model.fit(X_train_vec, y_train)
+
+# Helper functions
+def compile_model(model):
+    model.compile(optimizer='adam', loss=keras.losses.BinaryCrossentropy(), metrics=['accuracy'])
+
+def evaluate_model(model, X, y):
+    y_preds = np.round(model.predict(X))
+    return {
+        'accuracy': accuracy_score(y, y_preds),
+        'precision': precision_score(y, y_preds),
+        'recall': recall_score(y, y_preds),
+        'f1-score': f1_score(y, y_preds)
+    }
+
+def fit_model(model, epochs, X_train, y_train, X_test, y_test):
+    return model.fit(X_train, y_train, epochs=epochs, validation_data=(X_test, y_test))
+
+# Text vectorization & embedding
+MAXTOKENS = total_words_length
+OUTPUTLEN = avg_words_len
+text_vec = layers.TextVectorization(
+    max_tokens=MAXTOKENS,
+    standardize='lower_and_strip_punctuation',
+    output_mode='int',
+    output_sequence_length=OUTPUTLEN
+)
+text_vec.adapt(X_train)
+
+embedding_layer = layers.Embedding(input_dim=MAXTOKENS, output_dim=128, input_length=OUTPUTLEN)
+
+# Model 1: Custom embedding model
+input_layer = layers.Input(shape=(1,), dtype=tf.string)
+vec_layer = text_vec(input_layer)
+embed_out = embedding_layer(vec_layer)
+x = layers.GlobalAveragePooling1D()(embed_out)
+x = layers.Flatten()(x)
+x = layers.Dense(32, activation='relu')(x)
+output_layer = layers.Dense(1, activation='sigmoid')(x)
+model_1 = keras.Model(input_layer, output_layer)
+compile_model(model_1)
+history_1 = fit_model(model_1, 5, X_train, y_train, X_test, y_test)
+
+# Model 2: Bidirectional LSTM
+input_layer = layers.Input(shape=(1,), dtype=tf.string)
+vec_layer = text_vec(input_layer)
+embed_out = embedding_layer(vec_layer)
+x = layers.Bidirectional(layers.LSTM(64, return_sequences=True))(embed_out)
+x = layers.Bidirectional(layers.LSTM(64))(x)
+x = layers.Flatten()(x)
+x = layers.Dropout(0.1)(x)
+x = layers.Dense(32, activation='relu')(x)
+output_layer = layers.Dense(1, activation='sigmoid')(x)
+model_2 = keras.Model(input_layer, output_layer)
+compile_model(model_2)
+history_2 = fit_model(model_2, 5, X_train, y_train, X_test, y_test)
+
+# Model 3: Transfer learning with Universal Sentence Encoder
+tf.config.optimizer.set_jit(False)  # Disable XLA
+use_layer = hub.KerasLayer("https://tfhub.dev/google/universal-sentence-encoder/4", trainable=False)
+input_layer = layers.Input(shape=[], dtype=tf.string)
+x = use_layer(input_layer)
+x = layers.Dropout(0.2)(x)
+x = layers.Dense(64, activation='relu')(x)
+output_layer = layers.Dense(1, activation='sigmoid')(x)
+model_3 = keras.Model(input_layer, output_layer)
+compile_model(model_3)
+history_3 = fit_model(model_3, 5, X_train, y_train, X_test, y_test)
+
+# Evaluation
+baseline_model_results = evaluate_model(baseline_model, X_test_vec, y_test)
+model_1_results = evaluate_model(model_1, X_test, y_test)
+model_2_results = evaluate_model(model_2, X_test, y_test)
+model_3_results = evaluate_model(model_3, X_test, y_test)
+
+# Results summary
+total_results = pd.DataFrame({
+    'MultinomialNB Model': baseline_model_results,
+    'Custom-Vec-Embedding Model': model_1_results,
+    'Bidirectional-LSTM Model': model_2_results,
+    'USE-Transfer learning Model': model_3_results
+}).T
+
+print(total_results)
+
+
+
